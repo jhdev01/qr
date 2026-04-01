@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QR Vectorizer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;700;800&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0a0a0f;
+      --surface: #13131a;
+      --border: #2a2a38;
+      --accent: #00ffcc;
+      --accent2: #ff3cac;
+      --text: #e8e8f0;
+      --muted: #6b6b80;
+      --glow: 0 0 20px rgba(0,255,204,0.3);
+    }
+
+    body {
+      font-family: 'Space Mono', monospace;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 48px 20px 80px;
+      position: relative;
+      overflow-x: hidden;
+    }
+
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 60% 40% at 20% 20%, rgba(0,255,204,0.06) 0%, transparent 60%),
+        radial-gradient(ellipse 50% 50% at 80% 80%, rgba(255,60,172,0.05) 0%, transparent 60%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .grid-bg {
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
+      background-size: 40px 40px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 52px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .logo-tag {
+      font-size: 11px;
+      color: var(--accent);
+      letter-spacing: 0.3em;
+      text-transform: uppercase;
+      margin-bottom: 14px;
+      opacity: 0.8;
+    }
+
+    h1 {
+      font-family: 'Syne', sans-serif;
+      font-size: clamp(2.2rem, 6vw, 3.8rem);
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      line-height: 1;
+      background: linear-gradient(135deg, #fff 0%, var(--accent) 60%, var(--accent2) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .subtitle {
+      font-size: 13px;
+      color: var(--muted);
+      margin-top: 12px;
+      letter-spacing: 0.04em;
+    }
+
+    .main {
+      width: 100%;
+      max-width: 860px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      position: relative;
+      z-index: 1;
+    }
+
+    /* Drop Zone */
+    .drop-zone {
+      border: 1.5px dashed var(--border);
+      border-radius: 14px;
+      padding: 64px 40px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.25s ease;
+      background: var(--surface);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .drop-zone::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(circle at 50% 50%, rgba(0,255,204,0.05) 0%, transparent 70%);
+      opacity: 0;
+      transition: opacity 0.3s;
+      pointer-events: none;
+    }
+
+    .drop-zone:hover,
+    .drop-zone.drag-over {
+      border-color: var(--accent);
+      box-shadow: var(--glow), inset 0 0 40px rgba(0,255,204,0.03);
+    }
+
+    .drop-zone:hover::after,
+    .drop-zone.drag-over::after { opacity: 1; }
+
+    .drop-icon {
+      width: 56px;
+      height: 56px;
+      margin: 0 auto 18px;
+      border: 1.5px solid var(--border);
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0,255,204,0.05);
+      transition: all 0.25s;
+    }
+
+    .drop-zone:hover .drop-icon,
+    .drop-zone.drag-over .drop-icon {
+      border-color: var(--accent);
+      box-shadow: var(--glow);
+    }
+
+    .drop-icon svg { width: 22px; height: 22px; stroke: var(--accent); fill: none; stroke-width: 1.5; }
+
+    .drop-label { font-size: 14px; color: var(--text); margin-bottom: 6px; }
+    .drop-label span { color: var(--accent); font-weight: 700; }
+    .drop-sub { font-size: 11px; color: var(--muted); letter-spacing: 0.06em; }
+
+    #file-input { display: none; }
+
+    /* Panels */
+    .panels {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+
+    @media (max-width: 580px) { .panels { grid-template-columns: 1fr; } }
+
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      overflow: hidden;
+    }
+
+    .panel-header {
+      padding: 13px 18px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .panel-title {
+      font-size: 11px;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    .badge {
+      font-size: 10px;
+      padding: 3px 9px;
+      border-radius: 999px;
+      border: 1px solid;
+      letter-spacing: 0.06em;
+      font-weight: 700;
+    }
+
+    .badge-raster { border-color: var(--border); color: var(--muted); }
+    .badge-vector { border-color: var(--accent); color: var(--accent); background: rgba(0,255,204,0.08); }
+
+    .panel-body {
+      padding: 16px;
+      min-height: 230px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .placeholder-text {
+      font-size: 12px;
+      color: var(--muted);
+      text-align: center;
+      line-height: 2;
+    }
+
+    #preview-img {
+      max-width: 100%;
+      max-height: 230px;
+      border-radius: 6px;
+      display: none;
+      image-rendering: pixelated;
+    }
+
+    #svg-preview {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      max-width: 100%;
+    }
+
+    #svg-preview svg {
+      max-width: 100%;
+      max-height: 230px;
+      width: auto;
+      height: auto;
+    }
+
+    /* Meta bar */
+    .meta-bar {
+      display: none;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 13px 20px;
+      font-size: 12px;
+      color: var(--muted);
+      gap: 24px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .meta-bar strong { color: var(--text); margin-left: 4px; }
+
+    .meta-decode {
+      margin-left: auto;
+      color: var(--accent);
+      font-size: 11px;
+      max-width: 280px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* Error */
+    .error-box {
+      display: none;
+      background: rgba(255,60,172,0.07);
+      border: 1px solid rgba(255,60,172,0.28);
+      border-radius: 10px;
+      padding: 14px 18px;
+      font-size: 12px;
+      color: var(--accent2);
+      letter-spacing: 0.03em;
+      line-height: 1.6;
+    }
+
+    /* Actions */
+    .actions {
+      display: none;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      font-family: 'Space Mono', monospace;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      padding: 12px 26px;
+      border-radius: 8px;
+      border: 1.5px solid;
+      cursor: pointer;
+      transition: all 0.2s;
+      text-transform: uppercase;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .btn svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 2; flex-shrink: 0; }
+
+    .btn-primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #000;
+    }
+    .btn-primary:hover {
+      background: transparent;
+      color: var(--accent);
+      box-shadow: var(--glow);
+    }
+
+    .btn-ghost {
+      background: transparent;
+      border-color: var(--border);
+      color: var(--muted);
+    }
+    .btn-ghost:hover { border-color: var(--text); color: var(--text); }
+
+    /* Spinner */
+    .spinner {
+      display: none;
+      width: 28px;
+      height: 28px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    canvas { display: none; }
+
+    footer {
+      position: relative;
+      z-index: 1;
+      margin-top: 60px;
+      font-size: 11px;
+      color: var(--muted);
+      text-align: center;
+      letter-spacing: 0.05em;
+    }
+  </style>
+</head>
+<body>
+
+<div class="grid-bg"></div>
+
+<header>
+  <div class="logo-tag">// tool</div>
+  <h1>QR Vectorizer</h1>
+  <p class="subtitle">Upload a QR code image &rarr; download a perfect SVG</p>
+</header>
+
+<div class="main">
+
+  <div class="drop-zone" id="drop-zone">
+    <div class="drop-icon">
+      <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+    </div>
+    <p class="drop-label"><span>Click to upload</span> or drag &amp; drop</p>
+    <p class="drop-sub">PNG &middot; JPG &middot; GIF &middot; WEBP &middot; BMP</p>
+    <input type="file" id="file-input" accept="image/*">
+  </div>
+
+  <div class="error-box" id="error-box"></div>
+
+  <div class="panels">
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Original</span>
+        <span class="badge badge-raster">RASTER</span>
+      </div>
+      <div class="panel-body" id="orig-body">
+        <p class="placeholder-text" id="orig-ph">Upload an image<br>to get started</p>
+        <img id="preview-img" alt="Original QR code">
+        <div class="spinner" id="spinner"></div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Vectorized</span>
+        <span class="badge badge-vector">SVG</span>
+      </div>
+      <div class="panel-body">
+        <p class="placeholder-text" id="vec-ph">Awaiting conversion&hellip;<br>perfect squares guaranteed</p>
+        <div id="svg-preview"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="meta-bar" id="meta-bar">
+    <span>Grid: <strong id="meta-size">&mdash;</strong></span>
+    <span>Dark modules: <strong id="meta-modules">&mdash;</strong></span>
+    <span>Version: <strong id="meta-version">&mdash;</strong></span>
+    <span class="meta-decode" id="meta-decode"></span>
+  </div>
+
+  <div class="actions" id="actions">
+    <a class="btn btn-primary" id="download-btn" download="qr-vector.svg">
+      <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 13 7 8"/><line x1="12" y1="3" x2="12" y2="13"/></svg>
+      Download SVG
+    </a>
+    <button class="btn btn-ghost" id="reset-btn">Reset</button>
+  </div>
+
+</div>
+
+<footer>100% client-side &mdash; your images never leave your browser</footer>
+
+<canvas id="canvas"></canvas>
+
+<!-- jsQR from jsDelivr (works on Vercel/GitHub Pages) -->
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
