@@ -1,36 +1,34 @@
 (() => {
-  const dropZone   = document.getElementById('drop-zone');
-  const fileInput  = document.getElementById('file-input');
-  const previewImg = document.getElementById('preview-img');
-  const origPh     = document.getElementById('orig-ph');
-  const svgPreview = document.getElementById('svg-preview');
-  const vecPh      = document.getElementById('vec-ph');
-  const errorBox   = document.getElementById('error-box');
-  const metaBar    = document.getElementById('meta-bar');
-  const actions    = document.getElementById('actions');
-  const downloadBtn= document.getElementById('download-btn');
-  const resetBtn   = document.getElementById('reset-btn');
-  const canvas     = document.getElementById('canvas');
-  const spinner    = document.getElementById('spinner');
-  const ctx        = canvas.getContext('2d');
+  const dropZone    = document.getElementById('drop-zone');
+  const fileInput   = document.getElementById('file-input');
+  const previewImg  = document.getElementById('preview-img');
+  const origPh      = document.getElementById('orig-ph');
+  const svgPreview  = document.getElementById('svg-preview');
+  const vecPh       = document.getElementById('vec-ph');
+  const errorBox    = document.getElementById('error-box');
+  const metaBar     = document.getElementById('meta-bar');
+  const actions     = document.getElementById('actions');
+  const downloadBtn = document.getElementById('download-btn');
+  const resetBtn    = document.getElementById('reset-btn');
+  const canvas      = document.getElementById('canvas');
+  const spinner     = document.getElementById('spinner');
+  const ctx         = canvas.getContext('2d', { willReadFrequently: true });
 
-  // ── Event wiring ──────────────────────────────────────────────────────────
+  // ── Event wiring ────────────────────────────────────────────────────────
 
   dropZone.addEventListener('click', () => fileInput.click());
   fileInput.addEventListener('change', e => e.target.files[0] && processFile(e.target.files[0]));
-
   dropZone.addEventListener('dragover',  e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
-  dropZone.addEventListener('dragleave', ()  => dropZone.classList.remove('drag-over'));
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
   dropZone.addEventListener('drop', e => {
     e.preventDefault();
     dropZone.classList.remove('drag-over');
     const f = e.dataTransfer.files[0];
     if (f && f.type.startsWith('image/')) processFile(f);
   });
-
   resetBtn.addEventListener('click', reset);
 
-  // ── Core flow ─────────────────────────────────────────────────────────────
+  // ── Core flow ────────────────────────────────────────────────────────────
 
   function processFile(file) {
     reset();
@@ -38,14 +36,10 @@
     reader.onload = e => {
       const img = new Image();
       img.onload = () => {
-        // Show original preview
         origPh.style.display = 'none';
         previewImg.src = e.target.result;
         previewImg.style.display = 'block';
         spinner.style.display = 'block';
-        errorBox.style.display = 'none';
-
-        // Defer so the browser paints the preview first
         setTimeout(() => runPipeline(img), 60);
       };
       img.src = e.target.result;
@@ -55,127 +49,121 @@
 
   function runPipeline(img) {
     try {
-      // 1. Draw to canvas and grab pixel data
       canvas.width  = img.naturalWidth;
       canvas.height = img.naturalHeight;
       ctx.drawImage(img, 0, 0);
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
 
-      // 2. Try jsQR with both inversion modes
+      // Try normal then inverted
       const code =
         jsQR(imageData.data, canvas.width, canvas.height, { inversionAttempts: 'dontInvert' }) ||
         jsQR(imageData.data, canvas.width, canvas.height, { inversionAttempts: 'onlyInvert' });
 
       if (!code) {
         spinner.style.display = 'none';
-        showError('No QR code detected. Tips: ensure good contrast, minimal blur, and that the full code is visible.');
+        showError('No QR code detected. Make sure the full code is visible with good contrast and minimal blur.');
         return;
       }
 
-      // 3. Sample the module grid using detected corner points
-      const gridSize = estimateGridSize(code);
-      const grid     = sampleGrid(code.location, gridSize);
+      // jsQR gives us code.version (1–40) directly — no guessing needed.
+      // Grid size is always exactly 4*version + 17.
+      const version  = code.version;
+      const gridSize = 4 * version + 17;
 
-      // 4. Build SVG
+      // Unwarp the QR region and sample one value per module centre.
+      const grid = unwarpAndSample(code.location, gridSize);
+
       const svgStr = buildSVG(grid);
 
-      // 5. Render
-      spinner.style.display = 'none';
-      vecPh.style.display = 'none';
-      svgPreview.innerHTML = svgStr;
+      spinner.style.display    = 'none';
+      vecPh.style.display      = 'none';
+      svgPreview.innerHTML     = svgStr;
       svgPreview.style.display = 'flex';
 
-      // 6. Meta
+      // Meta bar
       const darkCount = grid.flat().filter(Boolean).length;
-      const version   = Math.round((gridSize - 17) / 4);
       document.getElementById('meta-size').textContent    = `${gridSize}×${gridSize}`;
       document.getElementById('meta-modules').textContent = darkCount;
-      document.getElementById('meta-version').textContent = version >= 1 ? `v${version}` : '—';
+      document.getElementById('meta-version').textContent = `v${version}`;
       document.getElementById('meta-decode').textContent  =
-        code.data ? `"${code.data.length > 70 ? code.data.slice(0, 70) + '…' : code.data}"` : '';
+        code.data ? `"${code.data.length > 72 ? code.data.slice(0, 72) + '…' : code.data}"` : '';
 
-      metaBar.style.display  = 'flex';
-      actions.style.display  = 'flex';
+      metaBar.style.display = 'flex';
+      actions.style.display = 'flex';
 
-      // 7. Download link
       const blob = new Blob([svgStr], { type: 'image/svg+xml' });
       downloadBtn.href = URL.createObjectURL(blob);
 
     } catch (err) {
       spinner.style.display = 'none';
       showError('Error: ' + err.message);
+      console.error(err);
     }
   }
 
-  // ── Grid size estimation ──────────────────────────────────────────────────
+  // ── Perspective unwarp + grid sampling ───────────────────────────────────
+  //
+  // jsQR gives us the four corner pixel coords of the QR in the source image.
+  // We bilinearly interpolate to find each module's centre pixel, then average
+  // a small patch of pixels around it (more robust than a single pixel read).
 
-  function estimateGridSize(code) {
-    const loc = code.location;
+  function unwarpAndSample(loc, size) {
+    const tl = loc.topLeftCorner;
+    const tr = loc.topRightCorner;
+    const bl = loc.bottomLeftCorner;
+    const br = loc.bottomRightCorner;
 
-    // Count pixel transitions along the top edge → ≈ number of modules
-    const samples = 300;
-    let transitions = 0;
-    let lastDark = null;
+    // Patch radius: ~30% of one module's pixel size, minimum 1px
+    const modW  = Math.hypot(tr.x - tl.x, tr.y - tl.y) / size;
+    const modH  = Math.hypot(bl.x - tl.x, bl.y - tl.y) / size;
+    const patch = Math.max(1, Math.floor(Math.min(modW, modH) * 0.3));
 
-    for (let i = 0; i < samples; i++) {
-      const t  = i / (samples - 1);
-      const px = Math.round(lerp(loc.topLeftCorner.x, loc.topRightCorner.x, t));
-      const py = Math.round(lerp(loc.topLeftCorner.y, loc.topRightCorner.y, t));
-      const cx = clamp(px, 0, canvas.width  - 1);
-      const cy = clamp(py, 0, canvas.height - 1);
-      const d  = ctx.getImageData(cx, cy, 1, 1).data;
-      const lum = 0.299 * d[0] + 0.587 * d[1] + 0.114 * d[2];
-      const dark = lum < 128;
-      if (lastDark !== null && dark !== lastDark) transitions++;
-      lastDark = dark;
-    }
-
-    // Snap to nearest valid QR grid size (4v+17, v=1..40)
-    const est = Math.round(transitions);
-    let best = 21, bestDiff = Infinity;
-    for (let v = 1; v <= 40; v++) {
-      const s    = 4 * v + 17;
-      const diff = Math.abs(s - est);
-      if (diff < bestDiff) { bestDiff = diff; best = s; }
-    }
-    return best;
-  }
-
-  // ── Perspective-corrected grid sampling ──────────────────────────────────
-
-  function sampleGrid(loc, size) {
-    const { topLeftCorner: tl, topRightCorner: tr, bottomLeftCorner: bl, bottomRightCorner: br } = loc;
     const grid = [];
-
     for (let row = 0; row < size; row++) {
-      grid.push([]);
+      const rowArr = [];
       for (let col = 0; col < size; col++) {
-        const t = (row + 0.5) / size;
-        const s = (col + 0.5) / size;
+        // Normalised (u, v) = centre of this module
+        const u = (col + 0.5) / size;
+        const v = (row + 0.5) / size;
 
-        // Bilinear interpolation across the four detected corners
-        const x = (1-t)*(1-s)*tl.x + (1-t)*s*tr.x + t*(1-s)*bl.x + t*s*br.x;
-        const y = (1-t)*(1-s)*tl.y + (1-t)*s*tr.y + t*(1-s)*bl.y + t*s*br.y;
+        // Bilinear map → pixel coords in the original image
+        const px = (1-v)*(1-u)*tl.x + (1-v)*u*tr.x + v*(1-u)*bl.x + v*u*br.x;
+        const py = (1-v)*(1-u)*tl.y + (1-v)*u*tr.y + v*(1-u)*bl.y + v*u*br.y;
 
-        const px  = clamp(Math.round(x), 0, canvas.width  - 1);
-        const py  = clamp(Math.round(y), 0, canvas.height - 1);
-        const d   = ctx.getImageData(px, py, 1, 1).data;
-        const lum = 0.299 * d[0] + 0.587 * d[1] + 0.114 * d[2];
-        grid[row].push(lum < 128 ? 1 : 0);
+        rowArr.push(patchLuminance(px, py, patch) < 128 ? 1 : 0);
       }
+      grid.push(rowArr);
     }
     return grid;
   }
 
-  // ── SVG builder ───────────────────────────────────────────────────────────
+  // Average luminance of a (2r+1)² patch centred on (cx, cy)
+  function patchLuminance(cx, cy, r) {
+    const x0 = clamp(Math.round(cx - r), 0, canvas.width  - 1);
+    const y0 = clamp(Math.round(cy - r), 0, canvas.height - 1);
+    const x1 = clamp(Math.round(cx + r), 0, canvas.width  - 1);
+    const y1 = clamp(Math.round(cy + r), 0, canvas.height - 1);
+    const w  = x1 - x0 + 1;
+    const h  = y1 - y0 + 1;
+    if (w <= 0 || h <= 0) return 255;
+
+    const data = ctx.getImageData(x0, y0, w, h).data;
+    let sum = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      sum += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+    }
+    return sum / (w * h);
+  }
+
+  // ── SVG builder ──────────────────────────────────────────────────────────
 
   function buildSVG(grid) {
     const size  = grid.length;
-    const quiet = 4;               // standard quiet zone (4 modules)
+    const quiet = 4;           // standard 4-module quiet zone
     const total = size + quiet * 2;
     let rects = '';
 
-    // Merge consecutive dark cells in each row → fewer <rect> elements
+    // Merge consecutive dark modules per row → compact SVG output
     for (let r = 0; r < size; r++) {
       let start = null;
       for (let c = 0; c <= size; c++) {
@@ -189,19 +177,16 @@
       }
     }
 
-    return [
-      `<svg xmlns="http://www.w3.org/2000/svg"`,
-      ` viewBox="0 0 ${total} ${total}"`,
-      ` shape-rendering="crispEdges">`,
-      `<rect width="${total}" height="${total}" fill="white"/>`,
-      `<g fill="black">${rects}</g>`,
+    return (
+      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${total} ${total}" shape-rendering="crispEdges">` +
+      `<rect width="${total}" height="${total}" fill="white"/>` +
+      `<g fill="black">${rects}</g>` +
       `</svg>`
-    ].join('');
+    );
   }
 
-  // ── Helpers ───────────────────────────────────────────────────────────────
+  // ── Helpers ──────────────────────────────────────────────────────────────
 
-  function lerp(a, b, t) { return a + (b - a) * t; }
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
   function showError(msg) {
