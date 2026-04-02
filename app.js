@@ -16,7 +16,7 @@
   const urlSubmit   = document.getElementById('url-submit');
   const ctx         = canvas.getContext('2d', { willReadFrequently: true });
 
-  // ── Tab switching ────────────────────────────────────────────────────────
+  // ── Tab switching ──────────────────────────────────────────────────────────
 
   window.switchTab = function(tab) {
     document.getElementById('panel-upload').style.display = tab === 'upload' ? 'block' : 'none';
@@ -25,7 +25,7 @@
     document.getElementById('tab-url').classList.toggle('active', tab === 'url');
   };
 
-  // ── Event wiring ────────────────────────────────────────────────────────
+  // ── Event wiring ──────────────────────────────────────────────────────────
 
   dropZone.addEventListener('click', () => fileInput.click());
   fileInput.addEventListener('change', e => e.target.files[0] && processFile(e.target.files[0]));
@@ -37,79 +37,52 @@
     const f = e.dataTransfer.files[0];
     if (f && f.type.startsWith('image/')) processFile(f);
   });
-
   urlSubmit.addEventListener('click', generateFromUrl);
   urlInput.addEventListener('keydown', e => { if (e.key === 'Enter') generateFromUrl(); });
-
   resetBtn.addEventListener('click', reset);
 
-  // ── Generate QR from URL/text ────────────────────────────────────────────
+  // ── Generate QR from URL/text ──────────────────────────────────────────────
 
   function generateFromUrl() {
     let text = urlInput.value.trim();
     if (!text) return;
-
-    // Auto-prepend https:// if it looks like a bare domain
     if (/^[a-zA-Z0-9-]+\.[a-zA-Z]{2,}/.test(text) && !/^https?:\/\//i.test(text)) {
       text = 'https://' + text;
       urlInput.value = text;
     }
-
     reset(false);
     showSpinner();
-
     try {
-      // qrcode-generator: type=0 means auto type number, 'M' = error correction
       const qr = qrcode(0, 'M');
       qr.addData(text);
       qr.make();
-
       const moduleCount = qr.getModuleCount();
       const version = (moduleCount - 17) / 4;
-
-      // Build grid directly from qrcode-generator — no pixel sampling needed
       const grid = [];
       for (let r = 0; r < moduleCount; r++) {
         const row = [];
-        for (let c = 0; c < moduleCount; c++) {
-          row.push(qr.isDark(r, c) ? 1 : 0);
-        }
+        for (let c = 0; c < moduleCount; c++) row.push(qr.isDark(r, c) ? 1 : 0);
         grid.push(row);
       }
-
-      // Draw to canvas so we can show a raster preview
-      const scale = 8;
-      const quiet = 4;
-      const totalModules = moduleCount + quiet * 2;
-      canvas.width  = totalModules * scale;
-      canvas.height = totalModules * scale;
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      // Draw raster preview
+      const scale = 8, quiet = 4, total = moduleCount + quiet * 2;
+      canvas.width = total * scale; canvas.height = total * scale;
+      ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.fillStyle = '#000000';
-      for (let r = 0; r < moduleCount; r++) {
-        for (let c = 0; c < moduleCount; c++) {
-          if (grid[r][c]) {
-            ctx.fillRect((quiet + c) * scale, (quiet + r) * scale, scale, scale);
-          }
-        }
-      }
-
-      // Show raster preview
-      origPh.style.display     = 'none';
-      previewImg.src           = canvas.toDataURL();
+      for (let r = 0; r < moduleCount; r++)
+        for (let c = 0; c < moduleCount; c++)
+          if (grid[r][c]) ctx.fillRect((quiet+c)*scale, (quiet+r)*scale, scale, scale);
+      origPh.style.display = 'none';
+      previewImg.src = canvas.toDataURL();
       previewImg.style.display = 'block';
-      errorBox.style.display   = 'none';
-
       finishPipeline(grid, version, text);
-
     } catch (err) {
       hideSpinner();
       showError('Error generating QR code: ' + err.message);
-      console.error(err);
     }
   }
 
-  // ── File processing ──────────────────────────────────────────────────────
+  // ── File processing ────────────────────────────────────────────────────────
 
   function processFile(file) {
     reset(false);
@@ -124,56 +97,36 @@
     reader.readAsDataURL(file);
   }
 
-
-  // ── Pipeline ─────────────────────────────────────────────────────────────
+  // ── Pipeline ──────────────────────────────────────────────────────────────
 
   function runPipeline(img) {
     try {
+      // Draw onto white background (handles transparency)
       canvas.width  = img.naturalWidth;
       canvas.height = img.naturalHeight;
-
-      // Always composite onto white first — handles transparent PNGs correctly
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(img, 0, 0);
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
 
-      // First try jsQR (works for clean QR codes)
-      let code =
-        jsQR(imageData.data, canvas.width, canvas.height, { inversionAttempts: 'dontInvert' }) ||
-        jsQR(imageData.data, canvas.width, canvas.height, { inversionAttempts: 'onlyInvert' });
-
-      // Also try on a contrast-boosted version (helps with logos / low contrast)
-      if (!code || !code.location) {
-        const boosted = boostContrast(imageData);
-        code =
-          jsQR(boosted.data, canvas.width, canvas.height, { inversionAttempts: 'dontInvert' }) ||
-          jsQR(boosted.data, canvas.width, canvas.height, { inversionAttempts: 'onlyInvert' }) ||
-          code;
-      }
-
-      let grid, version, decoded = '';
+      // Try jsQR at multiple contrast thresholds
+      const code = tryJsQR();
 
       if (code && code.location && code.location.topLeftCorner) {
-        // Happy path — jsQR found it fully
-        version = code.version;
+        const version  = code.version;
         const gridSize = 4 * version + 17;
-        grid = unwarpAndSample(code.location, gridSize);
-        decoded = code.data || '';
+        const grid     = unwarpAndSample(code.location, gridSize);
+        finishPipeline(grid, version, code.data || '');
       } else {
-        // Fallback — locate grid via finder patterns, no decode needed
-        const result = findGridViaFinderPatterns(imageData);
-        if (!result) {
+        // Fallback: find grid geometrically via finder patterns
+        const result = findViaFinderPatterns();
+        if (result) {
+          const version = (result.grid.length - 17) / 4;
+          finishPipeline(result.grid, version, '');
+        } else {
           hideSpinner();
-          showError('Could not detect the QR code grid. Try a clearer image with stronger contrast between the modules and background.');
-          return;
+          showError('Could not detect the QR code. Try a higher resolution image, or ensure the QR has strong contrast between modules and background.');
         }
-        grid    = result.grid;
-        version = (grid.length - 17) / 4;
       }
-
-      finishPipeline(grid, version, decoded);
-
     } catch (err) {
       hideSpinner();
       showError('Error: ' + err.message);
@@ -181,140 +134,263 @@
     }
   }
 
-  // Boost contrast to help jsQR see through logos
-  function boostContrast(imageData) {
-    const src  = imageData.data;
-    const out  = new Uint8ClampedArray(src.length);
-    for (let i = 0; i < src.length; i += 4) {
-      const lum = 0.299 * src[i] + 0.587 * src[i+1] + 0.114 * src[i+2];
-      const v   = lum < 160 ? 0 : 255;
-      out[i] = out[i+1] = out[i+2] = v;
-      out[i+3] = 255;
+  // Try jsQR across several binarization thresholds
+  function tryJsQR() {
+    const W = canvas.width, H = canvas.height;
+    const raw = ctx.getImageData(0, 0, W, H);
+
+    // Attempt 1: raw image, both inversions
+    let code = jsQR(raw.data, W, H, { inversionAttempts: 'dontInvert' })
+            || jsQR(raw.data, W, H, { inversionAttempts: 'onlyInvert' });
+    if (code && code.location) return code;
+
+    // Attempts 2–5: binarize at different thresholds (helps grey-on-white QRs)
+    for (const threshold of [160, 100, 200, 80]) {
+      const bin = binarize(raw, threshold);
+      code = jsQR(bin, W, H, { inversionAttempts: 'dontInvert' })
+          || jsQR(bin, W, H, { inversionAttempts: 'onlyInvert' });
+      if (code && code.location) return code;
     }
-    return new ImageData(out, imageData.width, imageData.height);
+
+    // Attempt 6: auto-threshold using Otsu's method
+    const otsuBin = binarize(raw, otsuThreshold(raw));
+    code = jsQR(otsuBin, W, H, { inversionAttempts: 'dontInvert' })
+        || jsQR(otsuBin, W, H, { inversionAttempts: 'onlyInvert' });
+    if (code && code.location) return code;
+
+    return null;
   }
 
-  // ── Finder-pattern fallback for logos ────────────────────────────────────
-  // Scans for the three 7-module finder squares by looking for the 1:1:3:1:1
-  // dark/light run-length pattern in horizontal scan lines, clusters the hits,
-  // then picks the three best clusters as TL / TR / BL corners.
-
-  function findGridViaFinderPatterns(imageData) {
-    const W = imageData.width, H = imageData.height;
-    const px = imageData.data;
-
-    function lum(x, y) {
-      const i = (y * W + x) * 4;
-      return 0.299 * px[i] + 0.587 * px[i+1] + 0.114 * px[i+2];
+  // Binarize imageData to pure black/white at a given luminance threshold
+  function binarize(imageData, threshold) {
+    const src = imageData.data;
+    const out = new Uint8ClampedArray(src.length);
+    for (let i = 0; i < src.length; i += 4) {
+      const lum = 0.299*src[i] + 0.587*src[i+1] + 0.114*src[i+2];
+      const v   = lum < threshold ? 0 : 255;
+      out[i] = out[i+1] = out[i+2] = v; out[i+3] = 255;
     }
-    function isDark(x, y) { return lum(x, y) < 128; }
+    return out;
+  }
 
-    // Collect centre-points of finder-pattern candidates from horizontal scans
+  // Otsu's method: find optimal threshold by maximising inter-class variance
+  function otsuThreshold(imageData) {
+    const src  = imageData.data;
+    const hist = new Array(256).fill(0);
+    const N    = src.length / 4;
+    for (let i = 0; i < src.length; i += 4) {
+      const lum = Math.round(0.299*src[i] + 0.587*src[i+1] + 0.114*src[i+2]);
+      hist[lum]++;
+    }
+    let sum = 0;
+    for (let i = 0; i < 256; i++) sum += i * hist[i];
+    let sumB = 0, wB = 0, max = 0, thresh = 128;
+    for (let t = 0; t < 256; t++) {
+      wB += hist[t]; if (!wB) continue;
+      const wF = N - wB; if (!wF) break;
+      sumB += t * hist[t];
+      const mB = sumB / wB, mF = (sum - sumB) / wF;
+      const between = wB * wF * (mB - mF) ** 2;
+      if (between > max) { max = between; thresh = t; }
+    }
+    return thresh;
+  }
+
+  // ── Finder-pattern geometric fallback ─────────────────────────────────────
+  // Scans rows for the 1:1:3:1:1 dark/light run pattern that identifies QR
+  // finder squares, clusters hits into three corners, then derives the grid.
+
+  function findViaFinderPatterns() {
+    const W = canvas.width, H = canvas.height;
+
+    // Work on Otsu-binarized pixel data for clean run detection
+    const raw    = ctx.getImageData(0, 0, W, H);
+    const thresh = otsuThreshold(raw);
+    const bin    = binarize(raw, thresh);
+
+    function isDark(x, y) {
+      const i = (y * W + x) * 4;
+      return bin[i] < 128;
+    }
+
     const centres = [];
-    const step = Math.max(1, Math.floor(H / 200));
+    const step = Math.max(1, Math.floor(H / 300));
 
-    for (let y = 0; y < H; y += step) {
-      // Scan the row and collect run lengths
+    for (let y = step; y < H - step; y += step) {
+      // Build run-length array for this row
       const runs = [];
       let cur = isDark(0, y), count = 1;
       for (let x = 1; x < W; x++) {
         const d = isDark(x, y);
         if (d === cur) { count++; }
-        else { runs.push({ dark: cur, len: count, x: x - count }); cur = d; count = 1; }
+        else { runs.push([cur, count, x - count]); cur = d; count = 1; }
       }
-      runs.push({ dark: cur, len: count, x: W - count });
+      runs.push([cur, count, W - count]);
 
-      // Slide a window of 5 runs and look for 1:1:3:1:1 dark-light-dark-light-dark
+      // Slide 5-run window looking for dark:light:dark:light:dark in 1:1:3:1:1
       for (let i = 0; i + 4 < runs.length; i++) {
-        const r = runs.slice(i, i + 5);
-        if (!r[0].dark || r[1].dark || !r[2].dark || r[3].dark || !r[4].dark) continue;
-        const unit = (r[0].len + r[1].len + r[2].len + r[3].len + r[4].len) / 7;
-        if (unit < 2) continue;
-        const tolerance = unit * 0.6;
-        if (Math.abs(r[0].len - unit)     > tolerance) continue;
-        if (Math.abs(r[1].len - unit)     > tolerance) continue;
-        if (Math.abs(r[2].len - unit * 3) > tolerance * 3) continue;
-        if (Math.abs(r[3].len - unit)     > tolerance) continue;
-        if (Math.abs(r[4].len - unit)     > tolerance) continue;
-        // Centre of the finder pattern
-        const cx = r[2].x + Math.floor(r[2].len / 2);
+        const [d0,,] = runs[i],   [d1,,] = runs[i+1], [d2,,] = runs[i+2],
+              [d3,,] = runs[i+3], [d4,,] = runs[i+4];
+        if (!d0 || d1 || !d2 || d3 || !d4) continue;
+        const l0 = runs[i][1], l1 = runs[i+1][1], l2 = runs[i+2][1],
+              l3 = runs[i+3][1], l4 = runs[i+4][1];
+        const unit = (l0+l1+l2+l3+l4) / 7;
+        if (unit < 1.5) continue;
+        const tol = unit * 0.7;
+        if (Math.abs(l0-unit)   > tol) continue;
+        if (Math.abs(l1-unit)   > tol) continue;
+        if (Math.abs(l2-unit*3) > tol*3) continue;
+        if (Math.abs(l3-unit)   > tol) continue;
+        if (Math.abs(l4-unit)   > tol) continue;
+        const cx = runs[i+2][2] + Math.floor(l2/2);
         centres.push({ x: cx, y, unit });
       }
     }
 
-    if (centres.length < 10) return null;
+    if (centres.length < 5) return null;
 
-    // Cluster centres that are close together → one per finder pattern
+    // Cluster nearby hits → one cluster per finder pattern
     const clusters = [];
     for (const c of centres) {
-      let merged = false;
+      let best = null, bestD = Infinity;
       for (const cl of clusters) {
-        if (Math.hypot(c.x - cl.x, c.y - cl.y) < cl.unit * 7) {
-          cl.x = (cl.x * cl.n + c.x) / (cl.n + 1);
-          cl.y = (cl.y * cl.n + c.y) / (cl.n + 1);
-          cl.unit = (cl.unit * cl.n + c.unit) / (cl.n + 1);
-          cl.n++;
-          merged = true;
-          break;
-        }
+        const d = Math.hypot(c.x - cl.x, c.y - cl.y);
+        if (d < cl.unit * 8 && d < bestD) { bestD = d; best = cl; }
       }
-      if (!merged) clusters.push({ x: c.x, y: c.y, unit: c.unit, n: 1 });
+      if (best) {
+        best.x = (best.x * best.n + c.x) / (best.n + 1);
+        best.y = (best.y * best.n + c.y) / (best.n + 1);
+        best.unit = (best.unit * best.n + c.unit) / (best.n + 1);
+        best.n++;
+      } else {
+        clusters.push({ x: c.x, y: c.y, unit: c.unit, n: 1 });
+      }
     }
 
-    // Keep the three clusters with the most votes
     clusters.sort((a, b) => b.n - a.n);
-    const top = clusters.slice(0, 3);
-    if (top.length < 3) return null;
+    if (clusters.length < 3) return null;
+    const top3 = clusters.slice(0, 3);
 
-    // Identify TL, TR, BL by relative position
-    // TL is the one closest to the centroid of all three on both axes
-    top.sort((a, b) => a.x + a.y - (b.x + b.y));
-    const tl = top[0];
-    const other = [top[1], top[2]];
-    // TR is to the right of TL (larger x), BL is below (larger y)
-    other.sort((a, b) => a.x - b.x);
-    const bl = other[0].y > tl.y ? other[0] : other[1];
-    const tr = other[0].y > tl.y ? other[1] : other[0];
+    // Assign TL, TR, BL by position
+    // Sort by x+y: smallest = top-left
+    top3.sort((a, b) => (a.x + a.y) - (b.x + b.y));
+    const tl = top3[0];
+    const rem = [top3[1], top3[2]];
+    // Of the remaining two, higher y = bottom-left, lower y = top-right
+    rem.sort((a, b) => a.y - b.y);
+    const tr = rem[0], bl = rem[1];
 
-    // Estimate module size and grid size
-    const modW    = Math.hypot(tr.x - tl.x, tr.y - tl.y) / (tl.unit * 2 + /* finder */ 7);
-    const modH    = Math.hypot(bl.x - tl.x, bl.y - tl.y) / (tl.unit * 2 + 7);
-    const modSize = (modW + modH) / 2;
+    // Unit size = average from all three clusters
+    const unit = (tl.unit + tr.unit + bl.unit) / 3;
 
-    // Snap to nearest valid QR version
-    const estSize = Math.round(Math.hypot(tr.x - tl.x, tr.y - tl.y) / modSize);
-    let gridSize = 21;
-    let bestDiff = Infinity;
+    // Each finder is 7 modules wide/tall; its centre is at module 3.5 from the QR edge
+    // So: top-left of QR = tl.centre - 3.5 * modSize
+    // Distance TL→TR spans from col 3.5 to col (size-3.5) = size-7 modules
+    const tltrDist = Math.hypot(tr.x - tl.x, tr.y - tl.y);
+    const tlblDist = Math.hypot(bl.x - tl.x, bl.y - tl.y);
+    const modSizeH = tltrDist / (/* size-7 estimated via unit */ tltrDist / unit);
+    // Simpler: just use unit directly as module size
+    const modSize  = unit;
+
+    // Estimate grid size from pixel span + snap to valid QR size
+    const spanModules = Math.round(tltrDist / modSize);
+    let gridSize = 21, bestDiff = Infinity;
     for (let v = 1; v <= 40; v++) {
-      const s = 4 * v + 17, d = Math.abs(s - estSize);
+      const s = 4*v+17, d = Math.abs(s - (spanModules + 7));
       if (d < bestDiff) { bestDiff = d; gridSize = s; }
     }
 
-    // Derive all four corners from the three finder centres
+    // Four corners of the QR code (outer edge of quiet zone excluded,
+    // outer edge of finder pattern included)
     const loc = {
-      topLeftCorner:     { x: tl.x - modSize * 3.5, y: tl.y - modSize * 3.5 },
-      topRightCorner:    { x: tr.x + modSize * 3.5, y: tr.y - modSize * 3.5 },
-      bottomLeftCorner:  { x: bl.x - modSize * 3.5, y: bl.y + modSize * 3.5 },
-      bottomRightCorner: { x: tr.x + modSize * 3.5 + (bl.x - tl.x), y: bl.y + modSize * 3.5 + (tr.y - tl.y) },
+      topLeftCorner:     { x: tl.x - modSize*3.5, y: tl.y - modSize*3.5 },
+      topRightCorner:    { x: tr.x + modSize*3.5, y: tr.y - modSize*3.5 },
+      bottomLeftCorner:  { x: bl.x - modSize*3.5, y: bl.y + modSize*3.5 },
+      bottomRightCorner: {
+        x: tr.x + modSize*3.5 + (bl.x - tl.x),
+        y: bl.y + modSize*3.5 + (tr.y - tl.y)
+      },
     };
 
     const grid = unwarpAndSample(loc, gridSize);
     return { grid };
   }
 
-  // ── Shared finish (meta, SVG, download) ──────────────────────────────────
+  // ── Perspective unwarp + per-module sampling ───────────────────────────────
+
+  function unwarpAndSample(loc, size) {
+    const tl = loc.topLeftCorner,  tr = loc.topRightCorner;
+    const bl = loc.bottomLeftCorner, br = loc.bottomRightCorner;
+
+    const modW  = Math.hypot(tr.x-tl.x, tr.y-tl.y) / size;
+    const modH  = Math.hypot(bl.x-tl.x, bl.y-tl.y) / size;
+    const patch = Math.max(1, Math.floor(Math.min(modW, modH) * 0.35));
+
+    // Compute adaptive threshold per-image using Otsu on the raw canvas
+    const raw    = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const thresh = otsuThreshold(raw);
+
+    const grid = [];
+    for (let row = 0; row < size; row++) {
+      const rowArr = [];
+      for (let col = 0; col < size; col++) {
+        const u  = (col + 0.5) / size;
+        const v  = (row + 0.5) / size;
+        const px = (1-v)*(1-u)*tl.x + (1-v)*u*tr.x + v*(1-u)*bl.x + v*u*br.x;
+        const py = (1-v)*(1-u)*tl.y + (1-v)*u*tr.y + v*(1-u)*bl.y + v*u*br.y;
+        rowArr.push(patchLuminance(px, py, patch) < thresh ? 1 : 0);
+      }
+      grid.push(rowArr);
+    }
+    return grid;
+  }
+
+  function patchLuminance(cx, cy, r) {
+    const x0 = clamp(Math.round(cx-r), 0, canvas.width-1);
+    const y0 = clamp(Math.round(cy-r), 0, canvas.height-1);
+    const x1 = clamp(Math.round(cx+r), 0, canvas.width-1);
+    const y1 = clamp(Math.round(cy+r), 0, canvas.height-1);
+    const w = x1-x0+1, h = y1-y0+1;
+    if (w <= 0 || h <= 0) return 255;
+    const data = ctx.getImageData(x0, y0, w, h).data;
+    let sum = 0;
+    for (let i = 0; i < data.length; i += 4)
+      sum += 0.299*data[i] + 0.587*data[i+1] + 0.114*data[i+2];
+    return sum / (w * h);
+  }
+
+  // ── SVG builder ────────────────────────────────────────────────────────────
+
+  function buildSVG(grid) {
+    const size = grid.length, quiet = 4, total = size + quiet*2;
+    let rects = '';
+    for (let r = 0; r < size; r++) {
+      let start = null;
+      for (let c = 0; c <= size; c++) {
+        const dark = c < size && grid[r][c];
+        if (dark && start === null) { start = c; }
+        else if (!dark && start !== null) {
+          rects += `<rect x="${quiet+start}" y="${quiet+r}" width="${c-start}" height="1"/>`;
+          start = null;
+        }
+      }
+    }
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${total} ${total}" shape-rendering="crispEdges">` +
+           `<rect width="${total}" height="${total}" fill="white"/>` +
+           `<g fill="black">${rects}</g></svg>`;
+  }
+
+  // ── Shared finish ──────────────────────────────────────────────────────────
 
   function finishPipeline(grid, version, decoded) {
-    const svgStr   = buildSVG(grid);
-    const gridSize = grid.length;
-
+    const svgStr = buildSVG(grid);
     hideSpinner();
     vecPh.style.display      = 'none';
     svgPreview.innerHTML     = svgStr;
     svgPreview.style.display = 'flex';
 
     const darkCount = grid.flat().filter(Boolean).length;
-    document.getElementById('meta-size').textContent    = `${gridSize}×${gridSize}`;
+    document.getElementById('meta-size').textContent    = `${grid.length}×${grid.length}`;
     document.getElementById('meta-modules').textContent = darkCount;
     document.getElementById('meta-version').textContent = version >= 1 ? `v${version}` : '—';
 
@@ -325,92 +401,20 @@
         ? `<a href="${encodeURI(decoded)}" target="_blank" rel="noopener">${decoded}</a>`
         : `"${decoded}"`;
     } else {
-      metaDecode.textContent = '(logo QR — data not decoded)';
+      metaDecode.textContent = '(logo QR — content not decoded)';
     }
 
     metaBar.style.display = 'flex';
     actions.style.display = 'flex';
-
     const blob = new Blob([svgStr], { type: 'image/svg+xml' });
     downloadBtn.href = URL.createObjectURL(blob);
   }
 
-  // ── Perspective unwarp + grid sampling ───────────────────────────────────
-
-  function unwarpAndSample(loc, size) {
-    const tl = loc.topLeftCorner;
-    const tr = loc.topRightCorner;
-    const bl = loc.bottomLeftCorner;
-    const br = loc.bottomRightCorner;
-
-    const modW  = Math.hypot(tr.x - tl.x, tr.y - tl.y) / size;
-    const modH  = Math.hypot(bl.x - tl.x, bl.y - tl.y) / size;
-    const patch = Math.max(1, Math.floor(Math.min(modW, modH) * 0.3));
-
-    const grid = [];
-    for (let row = 0; row < size; row++) {
-      const rowArr = [];
-      for (let col = 0; col < size; col++) {
-        const u = (col + 0.5) / size;
-        const v = (row + 0.5) / size;
-        const px = (1-v)*(1-u)*tl.x + (1-v)*u*tr.x + v*(1-u)*bl.x + v*u*br.x;
-        const py = (1-v)*(1-u)*tl.y + (1-v)*u*tr.y + v*(1-u)*bl.y + v*u*br.y;
-        rowArr.push(patchLuminance(px, py, patch) < 128 ? 1 : 0);
-      }
-      grid.push(rowArr);
-    }
-    return grid;
-  }
-
-  function patchLuminance(cx, cy, r) {
-    const x0 = clamp(Math.round(cx - r), 0, canvas.width  - 1);
-    const y0 = clamp(Math.round(cy - r), 0, canvas.height - 1);
-    const x1 = clamp(Math.round(cx + r), 0, canvas.width  - 1);
-    const y1 = clamp(Math.round(cy + r), 0, canvas.height - 1);
-    const w  = x1 - x0 + 1;
-    const h  = y1 - y0 + 1;
-    if (w <= 0 || h <= 0) return 255;
-    const data = ctx.getImageData(x0, y0, w, h).data;
-    let sum = 0;
-    for (let i = 0; i < data.length; i += 4)
-      sum += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-    return sum / (w * h);
-  }
-
-  // ── SVG builder ──────────────────────────────────────────────────────────
-
-  function buildSVG(grid) {
-    const size  = grid.length;
-    const quiet = 4;
-    const total = size + quiet * 2;
-    let rects = '';
-
-    for (let r = 0; r < size; r++) {
-      let start = null;
-      for (let c = 0; c <= size; c++) {
-        const dark = c < size && grid[r][c];
-        if (dark && start === null) {
-          start = c;
-        } else if (!dark && start !== null) {
-          rects += `<rect x="${quiet + start}" y="${quiet + r}" width="${c - start}" height="1"/>`;
-          start = null;
-        }
-      }
-    }
-
-    return (
-      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${total} ${total}" shape-rendering="crispEdges">` +
-      `<rect width="${total}" height="${total}" fill="white"/>` +
-      `<g fill="black">${rects}</g>` +
-      `</svg>`
-    );
-  }
-
-  // ── UI helpers ───────────────────────────────────────────────────────────
+  // ── UI helpers ────────────────────────────────────────────────────────────
 
   function showImagePreview(src) {
-    origPh.style.display  = 'none';
-    previewImg.src        = src;
+    origPh.style.display     = 'none';
+    previewImg.src           = src;
     previewImg.style.display = 'block';
     errorBox.style.display   = 'none';
   }
@@ -426,11 +430,9 @@
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
   function reset(clearUrl = true) {
-    previewImg.style.display = 'none';
-    previewImg.src           = '';
+    previewImg.style.display = 'none'; previewImg.src = '';
     origPh.style.display     = '';
-    svgPreview.style.display = 'none';
-    svgPreview.innerHTML     = '';
+    svgPreview.style.display = 'none'; svgPreview.innerHTML = '';
     vecPh.style.display      = '';
     errorBox.style.display   = 'none';
     metaBar.style.display    = 'none';
