@@ -460,7 +460,7 @@
   <!-- Tab switcher -->
   <div class="input-tabs">
     <button class="tab-btn active" id="tab-upload" onclick="switchTab('upload')">&#8679; Upload Image</button>
-    <button class="tab-btn" id="tab-url" onclick="switchTab('url')">&#9656; Fetch from URL</button>
+    <button class="tab-btn" id="tab-url" onclick="switchTab('url')">&#9656; Generate from URL</button>
   </div>
 
   <!-- Upload tab -->
@@ -477,13 +477,12 @@
 
   <!-- URL tab -->
   <div class="url-panel" id="panel-url">
-    <p class="url-label">Image URL</p>
+    <p class="url-label">URL or Text to Encode</p>
     <div class="url-row">
-      <input class="url-input" id="url-input" type="text" placeholder="https://example.com/qrcode.png" />
-      <button class="url-submit" id="url-submit">Fetch</button>
+      <input class="url-input" id="url-input" type="text" placeholder="https://yourwebsite.com" />
+      <button class="url-submit" id="url-submit">Generate</button>
     </div>
-    <p class="url-hint">Paste a direct link to an image file (.png, .jpg, .webp&hellip;). https:// is added automatically.<br>
-    If the server blocks cross-origin requests, download the image and use the Upload tab instead.</p>
+    <p class="url-hint">Enter any URL or text to generate a fresh QR code and vectorize it instantly. https:// is added automatically.</p>
   </div>
 
   <div class="error-box" id="error-box"></div>
@@ -533,6 +532,7 @@
 
 <canvas id="canvas"></canvas>
 
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
 <script src="app.js"></script>
 </body>
