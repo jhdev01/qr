@@ -38,78 +38,82 @@
     if (f && f.type.startsWith('image/')) processFile(f);
   });
 
-  urlSubmit.addEventListener('click', fetchFromUrl);
-  urlInput.addEventListener('keydown', e => { if (e.key === 'Enter') fetchFromUrl(); });
+  urlSubmit.addEventListener('click', generateFromUrl);
+  urlInput.addEventListener('keydown', e => { if (e.key === 'Enter') generateFromUrl(); });
 
   resetBtn.addEventListener('click', reset);
 
-  // ── URL fetch ────────────────────────────────────────────────────────────
+  // ── Generate QR from URL/text ────────────────────────────────────────────
 
-  const CORS_PROXIES = [
-    url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-    url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
-    url => `https://cors-anywhere.herokuapp.com/${url}`,
-  ];
+  async function generateFromUrl() {
+    let text = urlInput.value.trim();
+    if (!text) return;
 
-  async function fetchFromUrl() {
-    let url = urlInput.value.trim();
-    if (!url) return;
-
-    // Auto-prepend https:// if no protocol given
-    if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
-
-    // Warn if URL doesn't look like a direct image
-    const looksLikeImage = /\.(png|jpe?g|gif|webp|bmp|svg)(\?.*)?$/i.test(url);
+    // Auto-prepend https:// if it looks like a domain but has no protocol
+    if (/^[a-zA-Z0-9-]+\.[a-zA-Z]{2,}/.test(text) && !/^https?:\/\//i.test(text)) {
+      text = 'https://' + text;
+      urlInput.value = text;
+    }
 
     reset(false);
     showSpinner();
 
-    // Try each proxy in sequence until one works
-    let lastError = '';
-    for (const makeProxy of CORS_PROXIES) {
-      try {
-        const proxyUrl = makeProxy(url);
-        const resp = await fetch(proxyUrl, { signal: AbortSignal.timeout(8000) });
-        if (!resp.ok) { lastError = `HTTP ${resp.status}`; continue; }
-        const blob = await resp.blob();
-        // Accept any blob — some proxies return octet-stream even for images
-        if (blob.size === 0) { lastError = 'Empty response'; continue; }
-        processBlob(blob, url);
-        return; // success — stop trying proxies
-      } catch (err) {
-        lastError = err.message;
+    try {
+      // Render QR code onto our hidden canvas using the qrcode library
+      await QRCode.toCanvas(canvas, text, {
+        errorCorrectionLevel: 'M',
+        margin: 4,
+        width: 512,
+        color: { dark: '#000000', light: '#ffffff' }
+      });
+
+      // Show the generated QR as the "original"
+      origPh.style.display     = 'none';
+      previewImg.src           = canvas.toDataURL();
+      previewImg.style.display = 'block';
+      errorBox.style.display   = 'none';
+
+      // Now read it back with jsQR and vectorize
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const code =
+        jsQR(imageData.data, canvas.width, canvas.height, { inversionAttempts: 'dontInvert' });
+
+      if (!code) throw new Error('Could not re-read the generated QR code.');
+
+      const version  = code.version;
+      const gridSize = 4 * version + 17;
+      const grid     = unwarpAndSample(code.location, gridSize);
+      const svgStr   = buildSVG(grid);
+
+      hideSpinner();
+      vecPh.style.display      = 'none';
+      svgPreview.innerHTML     = svgStr;
+      svgPreview.style.display = 'flex';
+
+      const darkCount = grid.flat().filter(Boolean).length;
+      document.getElementById('meta-size').textContent    = `${gridSize}×${gridSize}`;
+      document.getElementById('meta-modules').textContent = darkCount;
+      document.getElementById('meta-version').textContent = `v${version}`;
+
+      const metaDecode = document.getElementById('meta-decode');
+      const isUrl = /^https?:\/\//i.test(text);
+      if (isUrl) {
+        metaDecode.innerHTML = `<a href="${encodeURI(text)}" target="_blank" rel="noopener">${text}</a>`;
+      } else {
+        metaDecode.textContent = `"${text}"`;
       }
+
+      metaBar.style.display = 'flex';
+      actions.style.display = 'flex';
+
+      const blob = new Blob([svgStr], { type: 'image/svg+xml' });
+      downloadBtn.href = URL.createObjectURL(blob);
+
+    } catch (err) {
+      hideSpinner();
+      showError('Error generating QR code: ' + err.message);
+      console.error(err);
     }
-
-    // All proxies failed — try loading directly as an <img> (works if server allows it)
-    tryDirectImageLoad(url, looksLikeImage, lastError);
-  }
-
-  function tryDirectImageLoad(url, looksLikeImage, proxyError) {
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    const timeout = setTimeout(() => {
-      hideSpinner();
-      const hint = looksLikeImage
-        ? 'Download the image and upload it directly.'
-        : 'Make sure the URL is a direct link to an image file (ending in .png, .jpg, etc.), not a webpage.';
-      showError(`Could not load image from URL.\n${hint}`);
-    }, 8000);
-
-    img.onload = () => {
-      clearTimeout(timeout);
-      showImagePreview(url);
-      setTimeout(() => runPipeline(img), 60);
-    };
-    img.onerror = () => {
-      clearTimeout(timeout);
-      hideSpinner();
-      const hint = looksLikeImage
-        ? 'The server is blocking cross-origin requests. Download the image and upload it directly.'
-        : 'Make sure the URL points directly to an image file, not a webpage.';
-      showError(`Could not load image from URL.\n${hint}`);
-    };
-    img.src = url;
   }
 
   // ── File processing ──────────────────────────────────────────────────────
@@ -127,18 +131,6 @@
     reader.readAsDataURL(file);
   }
 
-  function processBlob(blob, sourceUrl) {
-    const objectUrl = URL.createObjectURL(blob);
-    showImagePreview(objectUrl);
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => setTimeout(() => runPipeline(img), 60);
-    img.onerror = () => {
-      hideSpinner();
-      showError('Could not load the image. Check the URL and try again.');
-    };
-    img.src = objectUrl;
-  }
 
   // ── Pipeline ─────────────────────────────────────────────────────────────
 
