@@ -45,25 +45,71 @@
 
   // ── URL fetch ────────────────────────────────────────────────────────────
 
+  const CORS_PROXIES = [
+    url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+    url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+    url => `https://cors-anywhere.herokuapp.com/${url}`,
+  ];
+
   async function fetchFromUrl() {
-    const url = urlInput.value.trim();
+    let url = urlInput.value.trim();
     if (!url) return;
 
-    reset(false); // don't clear the URL input
+    // Auto-prepend https:// if no protocol given
+    if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+
+    // Warn if URL doesn't look like a direct image
+    const looksLikeImage = /\.(png|jpe?g|gif|webp|bmp|svg)(\?.*)?$/i.test(url);
+
+    reset(false);
     showSpinner();
 
-    try {
-      // Use a CORS proxy so cross-origin images load reliably
-      const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
-      const resp = await fetch(proxyUrl);
-      if (!resp.ok) throw new Error(`HTTP ${resp.status} — could not fetch image.`);
-      const blob = await resp.blob();
-      if (!blob.type.startsWith('image/')) throw new Error('URL does not point to an image file.');
-      processBlob(blob, url);
-    } catch (err) {
-      hideSpinner();
-      showError(`Could not fetch URL: ${err.message}\nTry downloading the image and uploading it directly.`);
+    // Try each proxy in sequence until one works
+    let lastError = '';
+    for (const makeProxy of CORS_PROXIES) {
+      try {
+        const proxyUrl = makeProxy(url);
+        const resp = await fetch(proxyUrl, { signal: AbortSignal.timeout(8000) });
+        if (!resp.ok) { lastError = `HTTP ${resp.status}`; continue; }
+        const blob = await resp.blob();
+        // Accept any blob — some proxies return octet-stream even for images
+        if (blob.size === 0) { lastError = 'Empty response'; continue; }
+        processBlob(blob, url);
+        return; // success — stop trying proxies
+      } catch (err) {
+        lastError = err.message;
+      }
     }
+
+    // All proxies failed — try loading directly as an <img> (works if server allows it)
+    tryDirectImageLoad(url, looksLikeImage, lastError);
+  }
+
+  function tryDirectImageLoad(url, looksLikeImage, proxyError) {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    const timeout = setTimeout(() => {
+      hideSpinner();
+      const hint = looksLikeImage
+        ? 'Download the image and upload it directly.'
+        : 'Make sure the URL is a direct link to an image file (ending in .png, .jpg, etc.), not a webpage.';
+      showError(`Could not load image from URL.\n${hint}`);
+    }, 8000);
+
+    img.onload = () => {
+      clearTimeout(timeout);
+      showImagePreview(url);
+      setTimeout(() => runPipeline(img), 60);
+    };
+    img.onerror = () => {
+      clearTimeout(timeout);
+      hideSpinner();
+      const hint = looksLikeImage
+        ? 'The server is blocking cross-origin requests. Download the image and upload it directly.'
+        : 'Make sure the URL points directly to an image file, not a webpage.';
+      showError(`Could not load image from URL.\n${hint}`);
+    };
+    img.src = url;
   }
 
   // ── File processing ──────────────────────────────────────────────────────
