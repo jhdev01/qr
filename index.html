@@ -100,11 +100,43 @@
       z-index: 1;
     }
 
-    /* Drop Zone */
+    /* ── Input tabs ── */
+    .input-tabs {
+      display: flex;
+      gap: 0;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+
+    .tab-btn {
+      flex: 1;
+      font-family: 'Space Mono', monospace;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      padding: 11px 16px;
+      background: transparent;
+      border: none;
+      color: var(--muted);
+      cursor: pointer;
+      transition: all 0.2s;
+      border-right: 1px solid var(--border);
+    }
+    .tab-btn:last-child { border-right: none; }
+    .tab-btn.active {
+      background: rgba(0,255,204,0.08);
+      color: var(--accent);
+    }
+    .tab-btn:hover:not(.active) { color: var(--text); }
+
+    /* ── Drop zone ── */
     .drop-zone {
       border: 1.5px dashed var(--border);
       border-radius: 14px;
-      padding: 64px 40px;
+      padding: 52px 40px;
       text-align: center;
       cursor: pointer;
       transition: all 0.25s ease;
@@ -133,9 +165,9 @@
     .drop-zone.drag-over::after { opacity: 1; }
 
     .drop-icon {
-      width: 56px;
-      height: 56px;
-      margin: 0 auto 18px;
+      width: 52px;
+      height: 52px;
+      margin: 0 auto 16px;
       border: 1.5px solid var(--border);
       border-radius: 12px;
       display: flex;
@@ -152,14 +184,76 @@
     }
 
     .drop-icon svg { width: 22px; height: 22px; stroke: var(--accent); fill: none; stroke-width: 1.5; }
-
     .drop-label { font-size: 14px; color: var(--text); margin-bottom: 6px; }
     .drop-label span { color: var(--accent); font-weight: 700; }
     .drop-sub { font-size: 11px; color: var(--muted); letter-spacing: 0.06em; }
-
     #file-input { display: none; }
 
-    /* Panels */
+    /* ── URL input panel ── */
+    .url-panel {
+      background: var(--surface);
+      border: 1.5px dashed var(--border);
+      border-radius: 14px;
+      padding: 36px 32px;
+      display: none;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .url-panel.visible { display: flex; }
+
+    .url-label {
+      font-size: 11px;
+      color: var(--muted);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .url-row {
+      display: flex;
+      gap: 10px;
+    }
+
+    .url-input {
+      flex: 1;
+      font-family: 'Space Mono', monospace;
+      font-size: 13px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 11px 14px;
+      color: var(--text);
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    .url-input::placeholder { color: var(--muted); }
+    .url-input:focus { border-color: var(--accent); }
+
+    .url-submit {
+      font-family: 'Space Mono', monospace;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 11px 20px;
+      background: var(--accent);
+      border: 1.5px solid var(--accent);
+      border-radius: 8px;
+      color: #000;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: all 0.2s;
+    }
+    .url-submit:hover { background: transparent; color: var(--accent); box-shadow: var(--glow); }
+
+    .url-hint {
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.7;
+    }
+
+    /* ── Panels ── */
     .panels {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -209,6 +303,7 @@
       display: flex;
       align-items: center;
       justify-content: center;
+      overflow: hidden;
     }
 
     .placeholder-text {
@@ -226,21 +321,28 @@
       image-rendering: pixelated;
     }
 
+    /* SVG preview — white bg so the QR is always visible against the dark panel */
     #svg-preview {
       display: none;
+      width: 100%;
+      height: 100%;
       align-items: center;
       justify-content: center;
-      max-width: 100%;
+      background: #fff;
+      border-radius: 8px;
+      padding: 12px;
+      min-height: 198px;
     }
 
     #svg-preview svg {
       max-width: 100%;
-      max-height: 230px;
+      max-height: 198px;
       width: auto;
       height: auto;
+      display: block;
     }
 
-    /* Meta bar */
+    /* ── Meta bar ── */
     .meta-bar {
       display: none;
       background: var(--surface);
@@ -266,7 +368,7 @@
       white-space: nowrap;
     }
 
-    /* Error */
+    /* ── Error ── */
     .error-box {
       display: none;
       background: rgba(255,60,172,0.07);
@@ -279,7 +381,7 @@
       line-height: 1.6;
     }
 
-    /* Actions */
+    /* ── Actions ── */
     .actions {
       display: none;
       gap: 12px;
@@ -305,25 +407,13 @@
 
     .btn svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 2; flex-shrink: 0; }
 
-    .btn-primary {
-      background: var(--accent);
-      border-color: var(--accent);
-      color: #000;
-    }
-    .btn-primary:hover {
-      background: transparent;
-      color: var(--accent);
-      box-shadow: var(--glow);
-    }
+    .btn-primary { background: var(--accent); border-color: var(--accent); color: #000; }
+    .btn-primary:hover { background: transparent; color: var(--accent); box-shadow: var(--glow); }
 
-    .btn-ghost {
-      background: transparent;
-      border-color: var(--border);
-      color: var(--muted);
-    }
+    .btn-ghost { background: transparent; border-color: var(--border); color: var(--muted); }
     .btn-ghost:hover { border-color: var(--text); color: var(--text); }
 
-    /* Spinner */
+    /* ── Spinner ── */
     .spinner {
       display: none;
       width: 28px;
@@ -360,13 +450,33 @@
 
 <div class="main">
 
-  <div class="drop-zone" id="drop-zone">
-    <div class="drop-icon">
-      <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+  <!-- Tab switcher -->
+  <div class="input-tabs">
+    <button class="tab-btn active" id="tab-upload" onclick="switchTab('upload')">&#8679; Upload Image</button>
+    <button class="tab-btn" id="tab-url" onclick="switchTab('url')">&#9656; Fetch from URL</button>
+  </div>
+
+  <!-- Upload tab -->
+  <div id="panel-upload">
+    <div class="drop-zone" id="drop-zone">
+      <div class="drop-icon">
+        <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      </div>
+      <p class="drop-label"><span>Click to upload</span> or drag &amp; drop</p>
+      <p class="drop-sub">PNG &middot; JPG &middot; GIF &middot; WEBP &middot; BMP</p>
+      <input type="file" id="file-input" accept="image/*">
     </div>
-    <p class="drop-label"><span>Click to upload</span> or drag &amp; drop</p>
-    <p class="drop-sub">PNG &middot; JPG &middot; GIF &middot; WEBP &middot; BMP</p>
-    <input type="file" id="file-input" accept="image/*">
+  </div>
+
+  <!-- URL tab -->
+  <div class="url-panel" id="panel-url">
+    <p class="url-label">Image URL</p>
+    <div class="url-row">
+      <input class="url-input" id="url-input" type="url" placeholder="https://example.com/qrcode.png" />
+      <button class="url-submit" id="url-submit">Fetch</button>
+    </div>
+    <p class="url-hint">Paste a direct link to a QR code image. The image must be publicly accessible.<br>
+    Note: some servers block cross-origin requests — if it fails, download the image and upload it instead.</p>
   </div>
 
   <div class="error-box" id="error-box"></div>
@@ -378,7 +488,7 @@
         <span class="badge badge-raster">RASTER</span>
       </div>
       <div class="panel-body" id="orig-body">
-        <p class="placeholder-text" id="orig-ph">Upload an image<br>to get started</p>
+        <p class="placeholder-text" id="orig-ph">Upload an image<br>or enter a URL</p>
         <img id="preview-img" alt="Original QR code">
         <div class="spinner" id="spinner"></div>
       </div>
@@ -388,7 +498,7 @@
         <span class="panel-title">Vectorized</span>
         <span class="badge badge-vector">SVG</span>
       </div>
-      <div class="panel-body">
+      <div class="panel-body" id="vec-body">
         <p class="placeholder-text" id="vec-ph">Awaiting conversion&hellip;<br>perfect squares guaranteed</p>
         <div id="svg-preview"></div>
       </div>
@@ -416,7 +526,6 @@
 
 <canvas id="canvas"></canvas>
 
-<!-- jsQR from jsDelivr (works on Vercel/GitHub Pages) -->
 <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
 <script src="app.js"></script>
 </body>
