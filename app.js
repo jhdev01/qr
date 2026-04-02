@@ -45,11 +45,11 @@
 
   // ── Generate QR from URL/text ────────────────────────────────────────────
 
-  async function generateFromUrl() {
+  function generateFromUrl() {
     let text = urlInput.value.trim();
     if (!text) return;
 
-    // Auto-prepend https:// if it looks like a domain but has no protocol
+    // Auto-prepend https:// if it looks like a bare domain
     if (/^[a-zA-Z0-9-]+\.[a-zA-Z]{2,}/.test(text) && !/^https?:\/\//i.test(text)) {
       text = 'https://' + text;
       urlInput.value = text;
@@ -59,49 +59,66 @@
     showSpinner();
 
     try {
-      // Render QR code onto our hidden canvas using the qrcode library
-      await QRCode.toCanvas(canvas, text, {
-        errorCorrectionLevel: 'M',
-        margin: 4,
-        width: 512,
-        color: { dark: '#000000', light: '#ffffff' }
-      });
+      // qrcode-generator: type=0 means auto type number, 'M' = error correction
+      const qr = qrcode(0, 'M');
+      qr.addData(text);
+      qr.make();
 
-      // Show the generated QR as the "original"
+      const moduleCount = qr.getModuleCount();
+
+      // Build grid directly from qrcode-generator — no pixel sampling needed
+      const grid = [];
+      for (let r = 0; r < moduleCount; r++) {
+        const row = [];
+        for (let c = 0; c < moduleCount; c++) {
+          row.push(qr.isDark(r, c) ? 1 : 0);
+        }
+        grid.push(row);
+      }
+
+      // Draw to canvas so we can show a raster preview
+      const scale = 8;
+      const quiet = 4;
+      const totalModules = moduleCount + quiet * 2;
+      canvas.width  = totalModules * scale;
+      canvas.height = totalModules * scale;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#000000';
+      for (let r = 0; r < moduleCount; r++) {
+        for (let c = 0; c < moduleCount; c++) {
+          if (grid[r][c]) {
+            ctx.fillRect((quiet + c) * scale, (quiet + r) * scale, scale, scale);
+          }
+        }
+      }
+
+      // Show raster preview
       origPh.style.display     = 'none';
       previewImg.src           = canvas.toDataURL();
       previewImg.style.display = 'block';
       errorBox.style.display   = 'none';
 
-      // Now read it back with jsQR and vectorize
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const code =
-        jsQR(imageData.data, canvas.width, canvas.height, { inversionAttempts: 'dontInvert' });
-
-      if (!code) throw new Error('Could not re-read the generated QR code.');
-
-      const version  = code.version;
-      const gridSize = 4 * version + 17;
-      const grid     = unwarpAndSample(code.location, gridSize);
-      const svgStr   = buildSVG(grid);
+      // Build SVG directly from the grid — perfect accuracy, no re-sampling
+      const svgStr = buildSVG(grid);
 
       hideSpinner();
       vecPh.style.display      = 'none';
       svgPreview.innerHTML     = svgStr;
       svgPreview.style.display = 'flex';
 
+      // Meta
       const darkCount = grid.flat().filter(Boolean).length;
-      document.getElementById('meta-size').textContent    = `${gridSize}×${gridSize}`;
+      const version   = (moduleCount - 17) / 4;
+      document.getElementById('meta-size').textContent    = `${moduleCount}×${moduleCount}`;
       document.getElementById('meta-modules').textContent = darkCount;
       document.getElementById('meta-version').textContent = `v${version}`;
 
       const metaDecode = document.getElementById('meta-decode');
       const isUrl = /^https?:\/\//i.test(text);
-      if (isUrl) {
-        metaDecode.innerHTML = `<a href="${encodeURI(text)}" target="_blank" rel="noopener">${text}</a>`;
-      } else {
-        metaDecode.textContent = `"${text}"`;
-      }
+      metaDecode.innerHTML = isUrl
+        ? `<a href="${encodeURI(text)}" target="_blank" rel="noopener">${text}</a>`
+        : `"${text}"`;
 
       metaBar.style.display = 'flex';
       actions.style.display = 'flex';
