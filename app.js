@@ -12,7 +12,18 @@
   const resetBtn    = document.getElementById('reset-btn');
   const canvas      = document.getElementById('canvas');
   const spinner     = document.getElementById('spinner');
+  const urlInput    = document.getElementById('url-input');
+  const urlSubmit   = document.getElementById('url-submit');
   const ctx         = canvas.getContext('2d', { willReadFrequently: true });
+
+  // ── Tab switching ────────────────────────────────────────────────────────
+
+  window.switchTab = function(tab) {
+    document.getElementById('panel-upload').style.display = tab === 'upload' ? 'block' : 'none';
+    document.getElementById('panel-url').classList.toggle('visible', tab === 'url');
+    document.getElementById('tab-upload').classList.toggle('active', tab === 'upload');
+    document.getElementById('tab-url').classList.toggle('active', tab === 'url');
+  };
 
   // ── Event wiring ────────────────────────────────────────────────────────
 
@@ -26,26 +37,64 @@
     const f = e.dataTransfer.files[0];
     if (f && f.type.startsWith('image/')) processFile(f);
   });
+
+  urlSubmit.addEventListener('click', fetchFromUrl);
+  urlInput.addEventListener('keydown', e => { if (e.key === 'Enter') fetchFromUrl(); });
+
   resetBtn.addEventListener('click', reset);
 
-  // ── Core flow ────────────────────────────────────────────────────────────
+  // ── URL fetch ────────────────────────────────────────────────────────────
+
+  async function fetchFromUrl() {
+    const url = urlInput.value.trim();
+    if (!url) return;
+
+    reset(false); // don't clear the URL input
+    showSpinner();
+
+    try {
+      // Use a CORS proxy so cross-origin images load reliably
+      const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
+      const resp = await fetch(proxyUrl);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status} — could not fetch image.`);
+      const blob = await resp.blob();
+      if (!blob.type.startsWith('image/')) throw new Error('URL does not point to an image file.');
+      processBlob(blob, url);
+    } catch (err) {
+      hideSpinner();
+      showError(`Could not fetch URL: ${err.message}\nTry downloading the image and uploading it directly.`);
+    }
+  }
+
+  // ── File processing ──────────────────────────────────────────────────────
 
   function processFile(file) {
-    reset();
+    reset(false);
     const reader = new FileReader();
     reader.onload = e => {
+      showImagePreview(e.target.result);
+      showSpinner();
       const img = new Image();
-      img.onload = () => {
-        origPh.style.display = 'none';
-        previewImg.src = e.target.result;
-        previewImg.style.display = 'block';
-        spinner.style.display = 'block';
-        setTimeout(() => runPipeline(img), 60);
-      };
+      img.onload = () => setTimeout(() => runPipeline(img), 60);
       img.src = e.target.result;
     };
     reader.readAsDataURL(file);
   }
+
+  function processBlob(blob, sourceUrl) {
+    const objectUrl = URL.createObjectURL(blob);
+    showImagePreview(objectUrl);
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => setTimeout(() => runPipeline(img), 60);
+    img.onerror = () => {
+      hideSpinner();
+      showError('Could not load the image. Check the URL and try again.');
+    };
+    img.src = objectUrl;
+  }
+
+  // ── Pipeline ─────────────────────────────────────────────────────────────
 
   function runPipeline(img) {
     try {
@@ -54,33 +103,29 @@
       ctx.drawImage(img, 0, 0);
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
 
-      // Try normal then inverted
       const code =
         jsQR(imageData.data, canvas.width, canvas.height, { inversionAttempts: 'dontInvert' }) ||
         jsQR(imageData.data, canvas.width, canvas.height, { inversionAttempts: 'onlyInvert' });
 
       if (!code) {
-        spinner.style.display = 'none';
+        hideSpinner();
         showError('No QR code detected. Make sure the full code is visible with good contrast and minimal blur.');
         return;
       }
 
-      // jsQR gives us code.version (1–40) directly — no guessing needed.
-      // Grid size is always exactly 4*version + 17.
+      // jsQR gives us the version directly — grid size = 4*version + 17
       const version  = code.version;
       const gridSize = 4 * version + 17;
+      const grid     = unwarpAndSample(code.location, gridSize);
+      const svgStr   = buildSVG(grid);
 
-      // Unwarp the QR region and sample one value per module centre.
-      const grid = unwarpAndSample(code.location, gridSize);
-
-      const svgStr = buildSVG(grid);
-
-      spinner.style.display    = 'none';
+      // ── Show SVG preview ────────────────────────────────────────────────
+      hideSpinner();
       vecPh.style.display      = 'none';
       svgPreview.innerHTML     = svgStr;
       svgPreview.style.display = 'flex';
 
-      // Meta bar
+      // ── Meta ────────────────────────────────────────────────────────────
       const darkCount = grid.flat().filter(Boolean).length;
       document.getElementById('meta-size').textContent    = `${gridSize}×${gridSize}`;
       document.getElementById('meta-modules').textContent = darkCount;
@@ -95,17 +140,13 @@
       downloadBtn.href = URL.createObjectURL(blob);
 
     } catch (err) {
-      spinner.style.display = 'none';
+      hideSpinner();
       showError('Error: ' + err.message);
       console.error(err);
     }
   }
 
   // ── Perspective unwarp + grid sampling ───────────────────────────────────
-  //
-  // jsQR gives us the four corner pixel coords of the QR in the source image.
-  // We bilinearly interpolate to find each module's centre pixel, then average
-  // a small patch of pixels around it (more robust than a single pixel read).
 
   function unwarpAndSample(loc, size) {
     const tl = loc.topLeftCorner;
@@ -113,7 +154,6 @@
     const bl = loc.bottomLeftCorner;
     const br = loc.bottomRightCorner;
 
-    // Patch radius: ~30% of one module's pixel size, minimum 1px
     const modW  = Math.hypot(tr.x - tl.x, tr.y - tl.y) / size;
     const modH  = Math.hypot(bl.x - tl.x, bl.y - tl.y) / size;
     const patch = Math.max(1, Math.floor(Math.min(modW, modH) * 0.3));
@@ -122,14 +162,10 @@
     for (let row = 0; row < size; row++) {
       const rowArr = [];
       for (let col = 0; col < size; col++) {
-        // Normalised (u, v) = centre of this module
         const u = (col + 0.5) / size;
         const v = (row + 0.5) / size;
-
-        // Bilinear map → pixel coords in the original image
         const px = (1-v)*(1-u)*tl.x + (1-v)*u*tr.x + v*(1-u)*bl.x + v*u*br.x;
         const py = (1-v)*(1-u)*tl.y + (1-v)*u*tr.y + v*(1-u)*bl.y + v*u*br.y;
-
         rowArr.push(patchLuminance(px, py, patch) < 128 ? 1 : 0);
       }
       grid.push(rowArr);
@@ -137,7 +173,6 @@
     return grid;
   }
 
-  // Average luminance of a (2r+1)² patch centred on (cx, cy)
   function patchLuminance(cx, cy, r) {
     const x0 = clamp(Math.round(cx - r), 0, canvas.width  - 1);
     const y0 = clamp(Math.round(cy - r), 0, canvas.height - 1);
@@ -146,12 +181,10 @@
     const w  = x1 - x0 + 1;
     const h  = y1 - y0 + 1;
     if (w <= 0 || h <= 0) return 255;
-
     const data = ctx.getImageData(x0, y0, w, h).data;
     let sum = 0;
-    for (let i = 0; i < data.length; i += 4) {
+    for (let i = 0; i < data.length; i += 4)
       sum += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-    }
     return sum / (w * h);
   }
 
@@ -159,11 +192,10 @@
 
   function buildSVG(grid) {
     const size  = grid.length;
-    const quiet = 4;           // standard 4-module quiet zone
+    const quiet = 4;
     const total = size + quiet * 2;
     let rects = '';
 
-    // Merge consecutive dark modules per row → compact SVG output
     for (let r = 0; r < size; r++) {
       let start = null;
       for (let c = 0; c <= size; c++) {
@@ -185,27 +217,38 @@
     );
   }
 
-  // ── Helpers ──────────────────────────────────────────────────────────────
+  // ── UI helpers ───────────────────────────────────────────────────────────
 
-  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+  function showImagePreview(src) {
+    origPh.style.display  = 'none';
+    previewImg.src        = src;
+    previewImg.style.display = 'block';
+    errorBox.style.display   = 'none';
+  }
+
+  function showSpinner() { spinner.style.display = 'block'; }
+  function hideSpinner() { spinner.style.display = 'none'; }
 
   function showError(msg) {
-    errorBox.textContent = '⚠  ' + msg;
+    errorBox.textContent   = '⚠  ' + msg;
     errorBox.style.display = 'block';
   }
 
-  function reset() {
+  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+  function reset(clearUrl = true) {
     previewImg.style.display = 'none';
-    previewImg.src = '';
-    origPh.style.display = '';
+    previewImg.src           = '';
+    origPh.style.display     = '';
     svgPreview.style.display = 'none';
-    svgPreview.innerHTML = '';
-    vecPh.style.display = '';
-    errorBox.style.display = 'none';
-    metaBar.style.display = 'none';
-    actions.style.display = 'none';
-    spinner.style.display = 'none';
-    fileInput.value = '';
+    svgPreview.innerHTML     = '';
+    vecPh.style.display      = '';
+    errorBox.style.display   = 'none';
+    metaBar.style.display    = 'none';
+    actions.style.display    = 'none';
+    spinner.style.display    = 'none';
+    fileInput.value          = '';
+    if (clearUrl) urlInput.value = '';
   }
 
 })();
