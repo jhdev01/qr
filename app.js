@@ -65,6 +65,7 @@
       qr.make();
 
       const moduleCount = qr.getModuleCount();
+      const version = (moduleCount - 17) / 4;
 
       // Build grid directly from qrcode-generator — no pixel sampling needed
       const grid = [];
@@ -99,32 +100,7 @@
       previewImg.style.display = 'block';
       errorBox.style.display   = 'none';
 
-      // Build SVG directly from the grid — perfect accuracy, no re-sampling
-      const svgStr = buildSVG(grid);
-
-      hideSpinner();
-      vecPh.style.display      = 'none';
-      svgPreview.innerHTML     = svgStr;
-      svgPreview.style.display = 'flex';
-
-      // Meta
-      const darkCount = grid.flat().filter(Boolean).length;
-      const version   = (moduleCount - 17) / 4;
-      document.getElementById('meta-size').textContent    = `${moduleCount}×${moduleCount}`;
-      document.getElementById('meta-modules').textContent = darkCount;
-      document.getElementById('meta-version').textContent = `v${version}`;
-
-      const metaDecode = document.getElementById('meta-decode');
-      const isUrl = /^https?:\/\//i.test(text);
-      metaDecode.innerHTML = isUrl
-        ? `<a href="${encodeURI(text)}" target="_blank" rel="noopener">${text}</a>`
-        : `"${text}"`;
-
-      metaBar.style.display = 'flex';
-      actions.style.display = 'flex';
-
-      const blob = new Blob([svgStr], { type: 'image/svg+xml' });
-      downloadBtn.href = URL.createObjectURL(blob);
+      finishPipeline(grid, version, text);
 
     } catch (err) {
       hideSpinner();
@@ -162,62 +138,201 @@
       ctx.drawImage(img, 0, 0);
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
 
-      const code =
+      // First try jsQR (works for clean QR codes)
+      let code =
         jsQR(imageData.data, canvas.width, canvas.height, { inversionAttempts: 'dontInvert' }) ||
         jsQR(imageData.data, canvas.width, canvas.height, { inversionAttempts: 'onlyInvert' });
 
-      if (!code) {
-        hideSpinner();
-        showError('No QR code detected. Make sure the full code is visible with good contrast and minimal blur.');
-        return;
+      // Also try on a contrast-boosted version (helps with logos / low contrast)
+      if (!code || !code.location) {
+        const boosted = boostContrast(imageData);
+        code =
+          jsQR(boosted.data, canvas.width, canvas.height, { inversionAttempts: 'dontInvert' }) ||
+          jsQR(boosted.data, canvas.width, canvas.height, { inversionAttempts: 'onlyInvert' }) ||
+          code;
       }
 
-      if (!code.location || !code.location.topLeftCorner) {
-        hideSpinner();
-        showError('QR code found but could not determine its position. Try a higher resolution or higher contrast image.');
-        return;
-      }
+      let grid, version, decoded = '';
 
-      // jsQR gives us the version directly — grid size = 4*version + 17
-      const version  = code.version;
-      const gridSize = 4 * version + 17;
-      const grid     = unwarpAndSample(code.location, gridSize);
-      const svgStr   = buildSVG(grid);
-
-      // ── Show SVG preview ────────────────────────────────────────────────
-      hideSpinner();
-      vecPh.style.display      = 'none';
-      svgPreview.innerHTML     = svgStr;
-      svgPreview.style.display = 'flex';
-
-      // ── Meta ────────────────────────────────────────────────────────────
-      const darkCount = grid.flat().filter(Boolean).length;
-      document.getElementById('meta-size').textContent    = `${gridSize}×${gridSize}`;
-      document.getElementById('meta-modules').textContent = darkCount;
-      document.getElementById('meta-version').textContent = `v${version}`;
-      const metaDecode = document.getElementById('meta-decode');
-      if (code.data) {
-        const isUrl = /^https?:\/\//i.test(code.data);
-        if (isUrl) {
-          metaDecode.innerHTML = `<a href="${encodeURI(code.data)}" target="_blank" rel="noopener">${code.data}</a>`;
-        } else {
-          metaDecode.textContent = `"${code.data}"`;
-        }
+      if (code && code.location && code.location.topLeftCorner) {
+        // Happy path — jsQR found it fully
+        version = code.version;
+        const gridSize = 4 * version + 17;
+        grid = unwarpAndSample(code.location, gridSize);
+        decoded = code.data || '';
       } else {
-        metaDecode.textContent = '';
+        // Fallback — locate grid via finder patterns, no decode needed
+        const result = findGridViaFinderPatterns(imageData);
+        if (!result) {
+          hideSpinner();
+          showError('Could not detect the QR code grid. Try a clearer image with stronger contrast between the modules and background.');
+          return;
+        }
+        grid    = result.grid;
+        version = (grid.length - 17) / 4;
       }
 
-      metaBar.style.display = 'flex';
-      actions.style.display = 'flex';
-
-      const blob = new Blob([svgStr], { type: 'image/svg+xml' });
-      downloadBtn.href = URL.createObjectURL(blob);
+      finishPipeline(grid, version, decoded);
 
     } catch (err) {
       hideSpinner();
       showError('Error: ' + err.message);
       console.error(err);
     }
+  }
+
+  // Boost contrast to help jsQR see through logos
+  function boostContrast(imageData) {
+    const src  = imageData.data;
+    const out  = new Uint8ClampedArray(src.length);
+    for (let i = 0; i < src.length; i += 4) {
+      const lum = 0.299 * src[i] + 0.587 * src[i+1] + 0.114 * src[i+2];
+      const v   = lum < 160 ? 0 : 255;
+      out[i] = out[i+1] = out[i+2] = v;
+      out[i+3] = 255;
+    }
+    return new ImageData(out, imageData.width, imageData.height);
+  }
+
+  // ── Finder-pattern fallback for logos ────────────────────────────────────
+  // Scans for the three 7-module finder squares by looking for the 1:1:3:1:1
+  // dark/light run-length pattern in horizontal scan lines, clusters the hits,
+  // then picks the three best clusters as TL / TR / BL corners.
+
+  function findGridViaFinderPatterns(imageData) {
+    const W = imageData.width, H = imageData.height;
+    const px = imageData.data;
+
+    function lum(x, y) {
+      const i = (y * W + x) * 4;
+      return 0.299 * px[i] + 0.587 * px[i+1] + 0.114 * px[i+2];
+    }
+    function isDark(x, y) { return lum(x, y) < 128; }
+
+    // Collect centre-points of finder-pattern candidates from horizontal scans
+    const centres = [];
+    const step = Math.max(1, Math.floor(H / 200));
+
+    for (let y = 0; y < H; y += step) {
+      // Scan the row and collect run lengths
+      const runs = [];
+      let cur = isDark(0, y), count = 1;
+      for (let x = 1; x < W; x++) {
+        const d = isDark(x, y);
+        if (d === cur) { count++; }
+        else { runs.push({ dark: cur, len: count, x: x - count }); cur = d; count = 1; }
+      }
+      runs.push({ dark: cur, len: count, x: W - count });
+
+      // Slide a window of 5 runs and look for 1:1:3:1:1 dark-light-dark-light-dark
+      for (let i = 0; i + 4 < runs.length; i++) {
+        const r = runs.slice(i, i + 5);
+        if (!r[0].dark || r[1].dark || !r[2].dark || r[3].dark || !r[4].dark) continue;
+        const unit = (r[0].len + r[1].len + r[2].len + r[3].len + r[4].len) / 7;
+        if (unit < 2) continue;
+        const tolerance = unit * 0.6;
+        if (Math.abs(r[0].len - unit)     > tolerance) continue;
+        if (Math.abs(r[1].len - unit)     > tolerance) continue;
+        if (Math.abs(r[2].len - unit * 3) > tolerance * 3) continue;
+        if (Math.abs(r[3].len - unit)     > tolerance) continue;
+        if (Math.abs(r[4].len - unit)     > tolerance) continue;
+        // Centre of the finder pattern
+        const cx = r[2].x + Math.floor(r[2].len / 2);
+        centres.push({ x: cx, y, unit });
+      }
+    }
+
+    if (centres.length < 10) return null;
+
+    // Cluster centres that are close together → one per finder pattern
+    const clusters = [];
+    for (const c of centres) {
+      let merged = false;
+      for (const cl of clusters) {
+        if (Math.hypot(c.x - cl.x, c.y - cl.y) < cl.unit * 7) {
+          cl.x = (cl.x * cl.n + c.x) / (cl.n + 1);
+          cl.y = (cl.y * cl.n + c.y) / (cl.n + 1);
+          cl.unit = (cl.unit * cl.n + c.unit) / (cl.n + 1);
+          cl.n++;
+          merged = true;
+          break;
+        }
+      }
+      if (!merged) clusters.push({ x: c.x, y: c.y, unit: c.unit, n: 1 });
+    }
+
+    // Keep the three clusters with the most votes
+    clusters.sort((a, b) => b.n - a.n);
+    const top = clusters.slice(0, 3);
+    if (top.length < 3) return null;
+
+    // Identify TL, TR, BL by relative position
+    // TL is the one closest to the centroid of all three on both axes
+    top.sort((a, b) => a.x + a.y - (b.x + b.y));
+    const tl = top[0];
+    const other = [top[1], top[2]];
+    // TR is to the right of TL (larger x), BL is below (larger y)
+    other.sort((a, b) => a.x - b.x);
+    const bl = other[0].y > tl.y ? other[0] : other[1];
+    const tr = other[0].y > tl.y ? other[1] : other[0];
+
+    // Estimate module size and grid size
+    const modW    = Math.hypot(tr.x - tl.x, tr.y - tl.y) / (tl.unit * 2 + /* finder */ 7);
+    const modH    = Math.hypot(bl.x - tl.x, bl.y - tl.y) / (tl.unit * 2 + 7);
+    const modSize = (modW + modH) / 2;
+
+    // Snap to nearest valid QR version
+    const estSize = Math.round(Math.hypot(tr.x - tl.x, tr.y - tl.y) / modSize);
+    let gridSize = 21;
+    let bestDiff = Infinity;
+    for (let v = 1; v <= 40; v++) {
+      const s = 4 * v + 17, d = Math.abs(s - estSize);
+      if (d < bestDiff) { bestDiff = d; gridSize = s; }
+    }
+
+    // Derive all four corners from the three finder centres
+    const loc = {
+      topLeftCorner:     { x: tl.x - modSize * 3.5, y: tl.y - modSize * 3.5 },
+      topRightCorner:    { x: tr.x + modSize * 3.5, y: tr.y - modSize * 3.5 },
+      bottomLeftCorner:  { x: bl.x - modSize * 3.5, y: bl.y + modSize * 3.5 },
+      bottomRightCorner: { x: tr.x + modSize * 3.5 + (bl.x - tl.x), y: bl.y + modSize * 3.5 + (tr.y - tl.y) },
+    };
+
+    const grid = unwarpAndSample(loc, gridSize);
+    return { grid };
+  }
+
+  // ── Shared finish (meta, SVG, download) ──────────────────────────────────
+
+  function finishPipeline(grid, version, decoded) {
+    const svgStr   = buildSVG(grid);
+    const gridSize = grid.length;
+
+    hideSpinner();
+    vecPh.style.display      = 'none';
+    svgPreview.innerHTML     = svgStr;
+    svgPreview.style.display = 'flex';
+
+    const darkCount = grid.flat().filter(Boolean).length;
+    document.getElementById('meta-size').textContent    = `${gridSize}×${gridSize}`;
+    document.getElementById('meta-modules').textContent = darkCount;
+    document.getElementById('meta-version').textContent = version >= 1 ? `v${version}` : '—';
+
+    const metaDecode = document.getElementById('meta-decode');
+    if (decoded) {
+      const isUrl = /^https?:\/\//i.test(decoded);
+      metaDecode.innerHTML = isUrl
+        ? `<a href="${encodeURI(decoded)}" target="_blank" rel="noopener">${decoded}</a>`
+        : `"${decoded}"`;
+    } else {
+      metaDecode.textContent = '(logo QR — data not decoded)';
+    }
+
+    metaBar.style.display = 'flex';
+    actions.style.display = 'flex';
+
+    const blob = new Blob([svgStr], { type: 'image/svg+xml' });
+    downloadBtn.href = URL.createObjectURL(blob);
   }
 
   // ── Perspective unwarp + grid sampling ───────────────────────────────────
