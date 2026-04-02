@@ -155,6 +155,10 @@
     try {
       canvas.width  = img.naturalWidth;
       canvas.height = img.naturalHeight;
+
+      // Always composite onto white first — handles transparent PNGs correctly
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(img, 0, 0);
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
 
@@ -165,6 +169,12 @@
       if (!code) {
         hideSpinner();
         showError('No QR code detected. Make sure the full code is visible with good contrast and minimal blur.');
+        return;
+      }
+
+      if (!code.location || !code.location.topLeftCorner) {
+        hideSpinner();
+        showError('QR code found but could not determine its position. Try a higher resolution or higher contrast image.');
         return;
       }
 
