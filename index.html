@@ -360,13 +360,20 @@
 
     .meta-decode {
       margin-left: auto;
-      color: var(--accent);
       font-size: 11px;
-      max-width: 280px;
+      max-width: 480px;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+
+    .meta-decode a {
+      color: var(--accent);
+      text-decoration: none;
+      border-bottom: 1px solid rgba(0,255,204,0.3);
+      transition: border-color 0.2s;
+    }
+    .meta-decode a:hover { border-color: var(--accent); }
 
     /* ── Error ── */
     .error-box {
@@ -472,11 +479,11 @@
   <div class="url-panel" id="panel-url">
     <p class="url-label">Image URL</p>
     <div class="url-row">
-      <input class="url-input" id="url-input" type="url" placeholder="https://example.com/qrcode.png" />
+      <input class="url-input" id="url-input" type="text" placeholder="https://example.com/qrcode.png" />
       <button class="url-submit" id="url-submit">Fetch</button>
     </div>
-    <p class="url-hint">Paste a direct link to a QR code image. The image must be publicly accessible.<br>
-    Note: some servers block cross-origin requests — if it fails, download the image and upload it instead.</p>
+    <p class="url-hint">Paste a direct link to an image file (.png, .jpg, .webp&hellip;). https:// is added automatically.<br>
+    If the server blocks cross-origin requests, download the image and use the Upload tab instead.</p>
   </div>
 
   <div class="error-box" id="error-box"></div>
