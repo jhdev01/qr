@@ -176,8 +176,17 @@
       document.getElementById('meta-size').textContent    = `${gridSize}×${gridSize}`;
       document.getElementById('meta-modules').textContent = darkCount;
       document.getElementById('meta-version').textContent = `v${version}`;
-      document.getElementById('meta-decode').textContent  =
-        code.data ? `"${code.data.length > 72 ? code.data.slice(0, 72) + '…' : code.data}"` : '';
+      const metaDecode = document.getElementById('meta-decode');
+      if (code.data) {
+        const isUrl = /^https?:\/\//i.test(code.data);
+        if (isUrl) {
+          metaDecode.innerHTML = `<a href="${encodeURI(code.data)}" target="_blank" rel="noopener">${code.data}</a>`;
+        } else {
+          metaDecode.textContent = `"${code.data}"`;
+        }
+      } else {
+        metaDecode.textContent = '';
+      }
 
       metaBar.style.display = 'flex';
       actions.style.display = 'flex';
